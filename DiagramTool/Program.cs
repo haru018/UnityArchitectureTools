@@ -1,115 +1,74 @@
-﻿using Microsoft.CodeAnalysis;
+﻿using System.Text;
+using Microsoft.CodeAnalysis;
 using Microsoft.CodeAnalysis.CSharp;
 using Microsoft.CodeAnalysis.CSharp.Syntax;
 
-class Program
+public class Program
 {
-    static void Main()
+    static void Main(string[] args)
     {
-        // サンプルのソースコード
-        string sourceCode = @"
-            namespace MyApp.Domain
-            {
-                public class Status { }
+        string targetDirectory = args.Length > 0 ? args[0] : "./";
+        string outputPath = args.Length > 1 ? args[1] : "ProjectClassDiagram.puml";
 
-                public class Weapon { 
-                    public Status WeaponStatus { get; set; }
-                }
+        var csFiles = Directory.GetFiles(targetDirectory, "*.cs", SearchOption.AllDirectories);
+        var syntaxTrees = new List<SyntaxTree>();
 
-                public class Player {
-                    private Weapon _equippedWeapon;
-                    public void Equip(Weapon w) { }
-                }
+        foreach (var file in csFiles)
+        {
+            var code = File.ReadAllText(file);
+            syntaxTrees.Add(CSharpSyntaxTree.ParseText(code, path: file));
+        }
 
-                public class GameManager {
-                    public Player MainPlayer { get; set; }
-                }
-            }
-        ";
-
-        SyntaxTree syntaxTree = CSharpSyntaxTree.ParseText(sourceCode);
-        var compilation = CSharpCompilation.Create("MyCompilation")
+        var compilation = CSharpCompilation.Create("UnityProjectCompilation")
             .AddReferences(MetadataReference.CreateFromFile(typeof(object).Assembly.Location))
-            .AddSyntaxTrees(syntaxTree);
-        var semanticModel = compilation.GetSemanticModel(syntaxTree);
+            .AddSyntaxTrees(syntaxTrees);
 
+        var allEdges = new HashSet<string>();
 
-        var allClassNodes = syntaxTree
-            .GetRoot()
-            .DescendantNodes()
-            .OfType<ClassDeclarationSyntax>();
-
-        var allClassSymbols = allClassNodes
-            .Select(node => semanticModel.GetDeclaredSymbol(node))
-            .OfType<INamedTypeSymbol>()
-            .ToList();
-
-        var allEdges = new List<(INamedTypeSymbol From, INamedTypeSymbol To)>();
-
-        foreach (var classSymbol in allClassSymbols)
+        foreach (var tree in syntaxTrees)
         {
-            foreach (var member in classSymbol.GetMembers())
+            var semanticModel = compilation.GetSemanticModel(tree);
+            var classNodes = tree
+                .GetRoot()
+                .DescendantNodes()
+                .OfType<ClassDeclarationSyntax>();
+
+            foreach (var node in classNodes)
             {
-                if (member.IsImplicitlyDeclared) continue;
+                if (!(semanticModel.GetDeclaredSymbol(node) is INamedTypeSymbol classSymbol)) continue;
 
-                ITypeSymbol targetType;
-                if (member is IFieldSymbol fieldSymbol)
-                    targetType = fieldSymbol.Type;
-                else if (member is IPropertySymbol propertySymbol)
-                    targetType = propertySymbol.Type;
-                else
-                    continue;
+                foreach (var member in classSymbol.GetMembers())
+                {
+                    if (member.IsImplicitlyDeclared) continue;
 
-                if (targetType is not INamedTypeSymbol namedTargetType) continue;
+                    ITypeSymbol targetType;
+                    if (member is IFieldSymbol fieldSymbol)
+                        targetType = fieldSymbol.Type;
+                    else if (member is IPropertySymbol propertySymbol)
+                        targetType = propertySymbol.Type;
+                    else
+                        continue;
 
-                if (namedTargetType.Locations.Any(l => l.IsInSource))
-                    allEdges.Add((classSymbol, namedTargetType));
+                    if (targetType is INamedTypeSymbol namedTargetType && namedTargetType.Locations.Any(l => l.IsInSource))
+                        allEdges.Add($"{classSymbol.Name} --> {namedTargetType.Name}");
+                }
             }
         }
 
-        var playerSymbol = allClassSymbols.FirstOrDefault(c => c.Name == "Player");
+        var sb = new StringBuilder();
+        sb.AppendLine("@startuml name\"ClassDiagram\"");
+        sb.AppendLine("title \"Project - Class Diagram\"");
+        sb.AppendLine("!define MonoBehaviour <<(M, Fuchsia)>>");
+        sb.AppendLine("!define ScriptableObject <<(S, Turquoise)>>");
+        sb.AppendLine("top to bottom direction");
+        sb.AppendLine("skinparam linetype ortho");
 
-        if (playerSymbol == null)
-        {
-            Console.WriteLine("Playerクラスのシンボルが見つかりませんでした。");
-            return;
-        }
 
-        var queue = new Queue<INamedTypeSymbol>();
-        queue.Enqueue(playerSymbol);
-        var visited = new HashSet<INamedTypeSymbol>(SymbolEqualityComparer.Default);
-        var printedEdges = new HashSet<string>();
+        foreach (var edge in allEdges)
+            sb.AppendLine(edge);
 
-        while (queue.Count > 0)
-        {
-            var currentSymbol = queue.Dequeue();
+        sb.AppendLine("@enduml");
 
-            if (!visited.Add(currentSymbol))
-                continue;
-
-            var outgoingEdges = allEdges
-                .Where(e => SymbolEqualityComparer.Default.Equals(e.From, currentSymbol));
-            foreach (var (From, To) in outgoingEdges)
-            {
-                string edge = $"{From.Name} --> {To.Name}";
-
-                if (!printedEdges.Add(edge)) continue;
-
-                Console.WriteLine(edge);
-                queue.Enqueue(To);
-            }
-
-            var incomingEdges = allEdges
-                .Where(e => SymbolEqualityComparer.Default.Equals(e.To, currentSymbol));
-            foreach (var (From, To) in incomingEdges)
-            {
-                string edge = $"{From.Name} --> {To.Name}";
-
-                if (!printedEdges.Add(edge)) continue;
-
-                Console.WriteLine(edge);
-                queue.Enqueue(From);
-            }
-        }
+        File.WriteAllText(outputPath, sb.ToString(), Encoding.UTF8);
     }
 }
