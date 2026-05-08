@@ -35,7 +35,22 @@ public class Program
 
             foreach (var node in classNodes)
             {
-                if (!(semanticModel.GetDeclaredSymbol(node) is INamedTypeSymbol classSymbol)) continue;
+                if (semanticModel.GetDeclaredSymbol(node) is not INamedTypeSymbol classSymbol) continue;
+
+                if (IsInheritingUnityClass(classSymbol, out string unityType))
+                    allEdges.Add($"class {classSymbol.Name} {unityType}");
+
+                if (classSymbol.BaseType != null && classSymbol.BaseType.SpecialType != SpecialType.System_Object)
+                {
+                    if (classSymbol.BaseType.Locations.Any(l => l.IsInSource))
+                    {
+                        allEdges.Add($"{classSymbol.BaseType.Name} <|-- {classSymbol.Name}");
+                    }
+                }
+
+                foreach (var iface in classSymbol.Interfaces)
+                    if (iface.Locations.Any(l => l.IsInSource))
+                        allEdges.Add($"{iface.Name} <|.. {classSymbol.Name}");
 
                 foreach (var member in classSymbol.GetMembers())
                 {
@@ -62,7 +77,7 @@ public class Program
         sb.AppendLine("!define ScriptableObject <<(S, Turquoise)>>");
         sb.AppendLine("top to bottom direction");
         sb.AppendLine("skinparam linetype ortho");
-
+        sb.AppendLine("");
 
         foreach (var edge in allEdges)
             sb.AppendLine(edge);
@@ -70,5 +85,23 @@ public class Program
         sb.AppendLine("@enduml");
 
         File.WriteAllText(outputPath, sb.ToString(), Encoding.UTF8);
+    }
+
+    static bool IsInheritingUnityClass(INamedTypeSymbol classSymbol, out string unityBaseName)
+    {
+        unityBaseName = string.Empty;
+        var currentBase = classSymbol.BaseType;
+
+        while (currentBase != null && currentBase.SpecialType != SpecialType.System_Object)
+        {
+            if (currentBase.Name == "MonoBehaviour" || currentBase.Name == "ScriptableObject")
+            {
+                unityBaseName = currentBase.Name;
+                return true;
+            }
+            currentBase = currentBase.BaseType;
+        }
+
+        return false;
     }
 }
