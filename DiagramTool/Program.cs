@@ -6,7 +6,7 @@ class Program
 {
     static void Main()
     {
-        // 複数のクラスが絡み合うソースコード
+        // サンプルのソースコード
         string sourceCode = @"
             namespace MyApp.Domain
             {
@@ -20,51 +20,35 @@ class Program
                     private Weapon _equippedWeapon;
                     public void Equip(Weapon w) { }
                 }
+
+                public class GameManager {
+                    public Player MainPlayer { get; set; }
+                }
             }
         ";
 
-        // 1. 構文木を作成
-        SyntaxTree tree = CSharpSyntaxTree.ParseText(sourceCode);
-
-        // 2. コンパイル空間（Compilation）を作成し、意味モデル（Semantic Model）を取得！
+        SyntaxTree syntaxTree = CSharpSyntaxTree.ParseText(sourceCode);
         var compilation = CSharpCompilation.Create("MyCompilation")
-            .AddReferences(MetadataReference.CreateFromFile(typeof(object).Assembly.Location)) // C#の基本型を認識させる
-            .AddSyntaxTrees(tree);
+            .AddReferences(MetadataReference.CreateFromFile(typeof(object).Assembly.Location))
+            .AddSyntaxTrees(syntaxTree);
+        var semanticModel = compilation.GetSemanticModel(syntaxTree);
 
-        var semanticModel = compilation.GetSemanticModel(tree);
 
-        // 3. 対象のクラス（今回はPlayer）の構文木を探す
-        var root = tree.GetRoot();
-        var playerClassNode = root.DescendantNodes()
-            .OfType<ClassDeclarationSyntax>()
-            .First(c => c.Identifier.Text == "Player");
+        var allClassNodes = syntaxTree
+            .GetRoot()
+            .DescendantNodes()
+            .OfType<ClassDeclarationSyntax>();
 
-        // 4. 構文木から「シンボル（型の意味情報）」に変換
-        var playerSymbol = semanticModel.GetDeclaredSymbol(playerClassNode);
+        var allClassSymbols = allClassNodes
+            .Select(node => semanticModel.GetDeclaredSymbol(node))
+            .OfType<INamedTypeSymbol>()
+            .ToList();
 
-        if (playerSymbol == null)
+        var allEdges = new List<(INamedTypeSymbol From, INamedTypeSymbol To)>();
+
+        foreach (var classSymbol in allClassSymbols)
         {
-            Console.WriteLine("Playerクラスのシンボルが見つかりませんでした。");
-            return;
-        }
-
-        Console.WriteLine($"=== [{playerSymbol.Name}] の依存先を探索 ===");
-
-        var queue = new Queue<INamedTypeSymbol>();
-        queue.Enqueue(playerSymbol);
-        var visited = new HashSet<INamedTypeSymbol>(SymbolEqualityComparer.Default);
-        var printedEdges = new HashSet<string>();
-
-        // 5. 依存先を抽出（今回はシンプルにフィールドとプロパティの型だけを見る）
-        while (queue.Count > 0)
-        {
-            var currentSymbol = queue.Dequeue();
-
-            if (visited.Contains(currentSymbol))
-                continue;
-            visited.Add(currentSymbol);
-
-            foreach (var member in currentSymbol.GetMembers())
+            foreach (var member in classSymbol.GetMembers())
             {
                 if (member.IsImplicitlyDeclared) continue;
 
@@ -76,21 +60,55 @@ class Program
                 else
                     continue;
 
-                if (targetType == null || targetType is not INamedTypeSymbol namedTargetType) continue;
+                if (targetType is not INamedTypeSymbol namedTargetType) continue;
 
-                // 【解決策2】その型が「解析対象のソースコード内（IsInSource）」で定義されているかチェック
-                // これにより、System.Int32(int) や System.String などの外部型が弾かれる
                 if (namedTargetType.Locations.Any(l => l.IsInSource))
-                {
-                    string edge = $"{currentSymbol.Name} --> {namedTargetType.Name}";
+                    allEdges.Add((classSymbol, namedTargetType));
+            }
+        }
 
-                    if (!printedEdges.Add(edge)) continue;
+        var playerSymbol = allClassSymbols.FirstOrDefault(c => c.Name == "Player");
 
-                    Console.WriteLine(edge);
-                    queue.Enqueue(namedTargetType);
+        if (playerSymbol == null)
+        {
+            Console.WriteLine("Playerクラスのシンボルが見つかりませんでした。");
+            return;
+        }
 
-                }
+        var queue = new Queue<INamedTypeSymbol>();
+        queue.Enqueue(playerSymbol);
+        var visited = new HashSet<INamedTypeSymbol>(SymbolEqualityComparer.Default);
+        var printedEdges = new HashSet<string>();
 
+        while (queue.Count > 0)
+        {
+            var currentSymbol = queue.Dequeue();
+
+            if (!visited.Add(currentSymbol))
+                continue;
+
+            var outgoingEdges = allEdges
+                .Where(e => SymbolEqualityComparer.Default.Equals(e.From, currentSymbol));
+            foreach (var (From, To) in outgoingEdges)
+            {
+                string edge = $"{From.Name} --> {To.Name}";
+
+                if (!printedEdges.Add(edge)) continue;
+
+                Console.WriteLine(edge);
+                queue.Enqueue(To);
+            }
+
+            var incomingEdges = allEdges
+                .Where(e => SymbolEqualityComparer.Default.Equals(e.To, currentSymbol));
+            foreach (var (From, To) in incomingEdges)
+            {
+                string edge = $"{From.Name} --> {To.Name}";
+
+                if (!printedEdges.Add(edge)) continue;
+
+                Console.WriteLine(edge);
+                queue.Enqueue(From);
             }
         }
     }
