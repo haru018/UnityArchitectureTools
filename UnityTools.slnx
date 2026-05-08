@@ -1,0 +1,4 @@
+<Solution>
+  <Project Path="DiagramTool/DiagramTool.csproj" />
+  <Project Path="NamespaceChecker/NamespaceChecker.csproj" />
+</Solution>
